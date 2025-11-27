@@ -592,6 +592,31 @@ void BaseRealSenseNode::registerDynamicOption(ros::NodeHandle& nh, rs2::options 
         }
         
     }
+    if (sensor.supports(RS2_OPTION_EMITTER_ENABLED))
+    {
+      if (_enable_emitter)
+        sensor.set_option(RS2_OPTION_EMITTER_ENABLED, 1.f); // Enable emitter
+      else
+        sensor.set_option(RS2_OPTION_EMITTER_ENABLED, 0.f); // Disable emitter
+    }
+    if (sensor.supports(RS2_OPTION_LASER_POWER))
+    {
+      // Query min and max values:
+      auto range = sensor.get_option_range(RS2_OPTION_LASER_POWER);
+      if (_enable_emitter)
+        sensor.set_option(RS2_OPTION_LASER_POWER, range.max); // Set max power
+      else
+        sensor.set_option(RS2_OPTION_LASER_POWER, 0.f); // Disable laser
+    }
+    if (sensor.supports(RS2_OPTION_EMITTER_ON_OFF)) // zxzx
+    {
+      if (_emitter_on_off)
+      {
+        sensor.set_option(RS2_OPTION_EMITTER_ON_OFF, 1.f); // Enable emitter
+      }
+      else
+        sensor.set_option(RS2_OPTION_EMITTER_ON_OFF, 0.f); // Disable emitter
+    }
     ddynrec->publishServicesTopics();
     _ddynrec.push_back(ddynrec);
 }
@@ -743,6 +768,8 @@ void BaseRealSenseNode::getParameters()
     _pnh.param("tf_publish_rate", _tf_publish_rate, TF_PUBLISH_RATE);
 
     _pnh.param("enable_sync", _sync_frames, SYNC_FRAMES);
+    _pnh.param("enable_emitter", _enable_emitter, true);
+    _pnh.param("emitter_on_off", _emitter_on_off, true);
     if (_pointcloud || _align_depth || _filters_str.size() > 0)
         _sync_frames = true;
 
@@ -1698,8 +1725,18 @@ void BaseRealSenseNode::frame_callback(rs2::frame frame)
 
                 if (f.is<rs2::points>())
                 {
+                  int emitter_on{};
+                  for (auto it = frameset.begin(); it != frameset.end(); ++it) {
+                    auto frame = (*it);
+                    if (frame.supports_frame_metadata(RS2_FRAME_METADATA_FRAME_EMITTER_MODE))
+                    {
+                      emitter_on=static_cast<int>(frame.get_frame_metadata(RS2_FRAME_METADATA_FRAME_EMITTER_MODE));
+                      break;
+                    }
+                  }
+                  if(emitter_on)
                     publishPointCloud(f.as<rs2::points>(), t, frameset);
-                    continue;
+                  continue;
                 }
                 if (stream_type == RS2_STREAM_DEPTH)
                 {
@@ -2414,17 +2451,35 @@ void BaseRealSenseNode::publishFrame(rs2::frame f, const ros::Time& t,
         cam_info.header.seq = seq[stream];
         info_publisher.publish(cam_info);
 
-        sensor_msgs::ImagePtr img;
-        img = cv_bridge::CvImage(std_msgs::Header(), encoding.at(stream.first), image).toImageMsg();
-        img->width = width;
-        img->height = height;
-        img->is_bigendian = false;
-        img->step = width * bpp;
-        img->header.frame_id = cam_info.header.frame_id;
-        img->header.stamp = t;
-        img->header.seq = seq[stream];
-
-        image_publisher.first.publish(img);
+//        sensor_msgs::ImagePtr img;
+//        img = cv_bridge::CvImage(std_msgs::Header(), encoding.at(stream.first), image).toImageMsg();
+//        img->width = width;
+//        img->height = height;
+//        img->is_bigendian = false;
+//        img->step = width * bpp;
+//        img->header.frame_id = cam_info.header.frame_id;
+//        img->header.stamp = t;
+//        img->header.seq = seq[stream];
+//
+//        image_publisher.first.publish(img);
+        int emitter_on = static_cast<int>(f.get_frame_metadata(RS2_FRAME_METADATA_FRAME_EMITTER_MODE));
+        if (!_emitter_on_off ||
+            (stream.first == rs2_stream::RS2_STREAM_COLOR) ||
+            (stream.first == rs2_stream::RS2_STREAM_DEPTH && emitter_on) ||
+            (stream.first == rs2_stream::RS2_STREAM_INFRARED && !emitter_on))
+        {
+//          ROS_INFO_STREAM("seq: "<<seq[stream]<<" type: "<<stream.first <<" on off: "<<emitter_on);
+          sensor_msgs::ImagePtr img;
+          img = cv_bridge::CvImage(std_msgs::Header(), encoding.at(stream.first), image).toImageMsg();
+          img->width = width;
+          img->height = height;
+          img->is_bigendian = false;
+          img->step = width * bpp;
+          img->header.frame_id = _optical_frame_id.at(stream);
+          img->header.stamp = t;
+          img->header.seq = seq[stream];
+          image_publisher.first.publish(img);
+        }
         ROS_DEBUG("%s stream published", rs2_stream_to_string(f.get_profile().stream_type()));
     }
     if (is_publishMetadata)
