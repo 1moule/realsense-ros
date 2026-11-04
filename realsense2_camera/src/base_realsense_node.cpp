@@ -1844,6 +1844,7 @@ bool BaseRealSenseNode::setBaseTime(double frame_time, rs2_timestamp_domain time
         ROS_WARN("frame's time domain is HARDWARE_CLOCK. Timestamps may reset periodically.");
         _ros_time_base = ros::Time::now();
         _camera_time_base = frame_time;
+        _previous_frame_time = frame_time;
         return true;
     }
     return false;
@@ -1853,6 +1854,14 @@ double BaseRealSenseNode::frameSystemTimeSec(rs2::frame frame)
 {
     if (frame.get_frame_timestamp_domain() == RS2_TIMESTAMP_DOMAIN_HARDWARE_CLOCK)
     {
+        if (_previous_frame_time > frame.get_timestamp())
+        {
+            ROS_WARN("Hardware clock reset detected. Resetting ROS time base.");
+            _ros_time_base = ros::Time::now();
+            _camera_time_base = frame.get_timestamp();
+        }
+        _previous_frame_time = frame.get_timestamp();
+
         double elapsed_camera_ms = (/*ms*/ frame.get_timestamp() - /*ms*/ _camera_time_base) / 1000.0;
         return (_ros_time_base.toSec() + elapsed_camera_ms);
     }
@@ -1897,6 +1906,23 @@ void BaseRealSenseNode::setupStreams()
         {
             std::string module_name = sensor_profile.first;
             rs2::sensor sensor = active_sensors[module_name];
+            if (sensor.supports(RS2_OPTION_INTER_CAM_SYNC_MODE))
+            {
+                int sync_mode = 0;
+                _pnh.param("inter_cam_sync_mode", sync_mode, 0);
+                try
+                {
+                    sensor.set_option(RS2_OPTION_INTER_CAM_SYNC_MODE,
+                                      static_cast<float>(sync_mode));
+                    ROS_INFO_STREAM("Set inter_cam_sync_mode = " << sync_mode
+                                    << " on sensor " << module_name);
+                }
+                catch (const rs2::error& e)
+                {
+                    ROS_WARN_STREAM("Failed to set inter_cam_sync_mode on "
+                                    << module_name << ": " << e.what());
+                }
+            }
             sensor.open(sensor_profile.second);
             sensor.start(_sensors_callback[module_name]);
             if (sensor.is<rs2::depth_sensor>())
